@@ -1990,7 +1990,29 @@
                 currentWorkerRegion = await detectWorkerRegion(request);
             }
         }
-        
+
+        // 支援由 client 以 query string 覆寫 proxyip（例如: ?proxyip=1.2.3.4 或 ?proxyip=socks5://user:pass@host:port）
+        try {
+            const _url = new URL(request.url);
+            const _proxy = (_url.searchParams.get('proxyip') || '').trim();
+            if (_proxy) {
+                // 以协议开头视为代理协议（socks5:// 或 http://），尝试解析为 socks/http 代理配置
+                if (/^(socks5|http):\/\//i.test(_proxy)) {
+                    const proto = _proxy.split('://')[0].toLowerCase();
+                    const addr = _proxy.replace(/^(socks5|http):\/\//i, '');
+                    try {
+                        parsedSocks5Config = parseSocksConfig(addr);
+                        isSocksEnabled = true;
+                    } catch (e) {
+                        isSocksEnabled = false;
+                    }
+                } else {
+                    // 否则作为直接的 fallback address（支持逗号分隔的多选，随机取一个）
+                    fallbackAddress = _proxy.includes(',') ? _proxy.split(',')[Math.floor(Math.random() * _proxy.split(',').length)].trim() : _proxy;
+                }
+            }
+        } catch (e) {}
+
         const wsPair = new WebSocketPair();
         const [clientSock, serverSock] = Object.values(wsPair);
         serverSock.accept();
