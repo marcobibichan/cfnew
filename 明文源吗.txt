@@ -339,6 +339,33 @@
                     fallbackAddress = envFallback.trim();
                 }
 
+                // 允许客户端通过 ?proxyip={ip-or-domain}(:port) 参数覆盖出站/反代IP（fallbackAddress）
+                // 适用于 VLESS (WebSocket) 和 xhttp 请求
+                // 如果未指定端口，默认使用 443
+                const isWsProxy = request.headers.get('Upgrade') === atob('d2Vic29ja2V0');  // WebSocket (V1234LESS)
+                const isXhttpProxy = request.method === 'POST' && ex;                       // xhttp
+
+                if (isWsProxy || isXhttpProxy) {
+                    const clientProxyIP = url.searchParams.get('proxyip');
+                    if (clientProxyIP) {
+                        const trimmed = clientProxyIP.trim();
+                        if (trimmed) {
+                            const parsed = parseAddressAndPort(trimmed);
+                            if (parsed.address) {
+                                const finalAddress = parsed.port ? `${parsed.address}:${parsed.port}` : parsed.address;
+                                fallbackAddress = finalAddress;
+                                console.log(`[ProxyIP Override] 客户端覆盖出站IP: ${fallbackAddress}`);
+                                // 可选：强制标记为自定义区域，便于日志或后续逻辑识别
+                                currentWorkerRegion = 'CLIENT_OVERRIDE';
+                                // 如果你的连接逻辑中有缓存解析的结果，这里可以清除（如果适用）
+                                // 例如：缓存反代解析数组 = null; （如果你的代码有类似缓存变量）
+                            } else {
+                                console.log(`[ProxyIP Override] 无效的 proxyip 参数格式: ${clientProxyIP}`);
+                            }
+                        }
+                    }
+                }
+
                 socks5Config = getConfigValue('s', env.s || env.S) || socks5Config;
                 if (socks5Config) {
                     try {
@@ -485,12 +512,6 @@
                 }
 
                 const url = new URL(request.url);
-
-                // 处理 proxyip 查询参数 - 从 URL 参数中提取并覆盖默认反代IP
-                const queryProxyIP = url.searchParams.get('proxyip');
-                if (queryProxyIP && queryProxyIP.trim()) {
-                    fallbackAddress = queryProxyIP.trim();
-                }
 
                 if (url.pathname.includes('/api/config')) {
                     const pathParts = url.pathname.split('/').filter(p => p);
@@ -1996,32 +2017,7 @@
                 currentWorkerRegion = await detectWorkerRegion(request);
             }
         }
-
-        // 支援由 client 以 query string 覆寫 proxyip（例如: ?proxyip=1.2.3.4 或 ?proxyip=socks5://user:pass@host:port）
-        // 這裡使用本地旗標 `proxyipOverridePrimary` 來表示 query 指定的非-protocol proxyip
-        // 應作為主要連線目標（而不僅是 fallback）。protocol 類型的 proxyip 仍會被解析為 SOCKS/HTTP 代理。
-        let proxyipOverridePrimary = false;
-        try {
-            const _url = new URL(request.url);
-            const _proxy = (_url.searchParams.get('proxyip') || '').trim();
-            if (_proxy) {
-                // 以协议开头视为代理协议（socks5:// 或 http://），尝试解析为 socks/http 代理配置
-                if (/^(socks5|http):\/\//i.test(_proxy)) {
-                    const addr = _proxy.replace(/^(socks5|http):\/\//i, '');
-                    try {
-                        parsedSocks5Config = parseSocksConfig(addr);
-                        isSocksEnabled = true;
-                    } catch (e) {
-                        isSocksEnabled = false;
-                    }
-                } else {
-                    // 否則作為直接的 fallback address（支持逗號分隔的多選，隨機取一個）
-                    fallbackAddress = _proxy.includes(',') ? _proxy.split(',')[Math.floor(Math.random() * _proxy.split(',').length)].trim() : _proxy;
-                    proxyipOverridePrimary = true;
-                }
-            }
-        } catch (e) {}
-
+        
         const wsPair = new WebSocketPair();
         const [clientSock, serverSock] = Object.values(wsPair);
         serverSock.accept();
@@ -2081,7 +2077,6 @@
     }
 
     async function forwardTCP(addrType, host, portNum, rawData, ws, respHeader, remoteConnWrapper) {
-        // 若 query 指定 ?proxyip=host:port 並希望當作主要目標，local 旗標 `proxyipOverridePrimary` 會被設定為 true
         async function connectAndSend(address, port, useSocks = false) {
             const remoteSock = useSocks ?
                 await establishSocksConnection(addrType, address, port) :
@@ -2145,20 +2140,7 @@
         }
         
         try {
-            // 決定初始連線目標：若 client 以 query 明確覆寫 proxyip（非 socks/http），
-            // 則將其作為主要連線目標；否則使用原始 host/port（可能透過 socks 代理）
-            let targetHost = host;
-            let targetPort = portNum;
-            let targetUseSocks = enableSocksDowngrade ? false : isSocksEnabled;
-            if (proxyipOverridePrimary && fallbackAddress && fallbackAddress.trim()) {
-                const parsed = parseAddressAndPort(fallbackAddress);
-                targetHost = parsed.address;
-                targetPort = parsed.port || portNum;
-                // query 指定的直接 proxyip（host:port）視為直接連線，不走 SOCKS
-                targetUseSocks = false;
-            }
-
-            const initialSocket = await connectAndSend(targetHost, targetPort, targetUseSocks);
+            const initialSocket = await connectAndSend(host, portNum, enableSocksDowngrade ? false : isSocksEnabled);
             remoteConnWrapper.socket = initialSocket;
             connectStreams(initialSocket, ws, respHeader, retryConnection);
         } catch (err) {
@@ -5562,12 +5544,6 @@
 
     async function handleXhttpPost(request) {
         try {
-            // 從 XHTTP POST 請求的 URL 提取 proxyip 查詢參數
-            const xhttpUrl = new URL(request.url);
-            const xhttpProxyIP = xhttpUrl.searchParams.get('proxyip');
-            if (xhttpProxyIP && xhttpProxyIP.trim()) {
-                fallbackAddress = xhttpProxyIP.trim();
-            }
             return await handle_xhttp_client(request.body, at);
         } catch (err) {
             return null;
