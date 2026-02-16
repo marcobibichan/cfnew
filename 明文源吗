@@ -342,10 +342,10 @@
                 // 允许客户端通过 ?proxyip={ip-or-domain}(:port) 参数覆盖出站/反代IP（fallbackAddress）
                 // 适用于 VLESS (WebSocket) 和 xhttp 请求
                 // 如果未指定端口，默认使用 443
-                const isWsProxy = request.headers.get('Upgrade') === atob('d2Vic29ja2V0');  // WebSocket (V1234LESS)
-                const isXhttpProxy = request.method === 'POST' && ex;                       // xhttp
+                const isWsProxy = request.headers.get('Upgrade') === atob('d2Vic29ja2V0');  // WebSocket (VLESS)
+                const isXhttpProxy = (request.method === 'POST' && ex);                      // xhttp
 
-                if (isWsProxy || isXhttpProxy) {
+                if ((isWsProxy || isXhttpProxy)) {
                     const clientProxyIP = url.searchParams.get('proxyip');
                     if (clientProxyIP) {
                         const trimmed = clientProxyIP.trim();
@@ -353,19 +353,22 @@
                             const parsed = parseAddressAndPort(trimmed);
                             if (parsed.address) {
                                 const finalAddress = parsed.port ? `${parsed.address}:${parsed.port}` : parsed.address;
+                                
+                                // 强制进入自定义IP模式（等同于在KV或env中设置 p=...）
                                 fallbackAddress = finalAddress;
-                                console.log(`[ProxyIP Override] 客户端覆盖出站IP: ${fallbackAddress}`);
-                                // 可选：强制标记为自定义区域，便于日志或后续逻辑识别
-                                currentWorkerRegion = 'CLIENT_OVERRIDE';
-                                // 如果你的连接逻辑中有缓存解析的结果，这里可以清除（如果适用）
-                                // 例如：缓存反代解析数组 = null; （如果你的代码有类似缓存变量）
+                                useCustomIP = true;
+                                currentWorkerRegion = 'CUSTOM';
+                                
+                                console.log(`[ProxyIP Override] 客户端覆盖出站IP: ${fallbackAddress} (强制自定义模式)`);
+                                
+                                // 可选：清除可能存在的优选缓存（如果你的连接逻辑有缓存解析结果的话）
+                                // 如果后续连接代码中缓存了解析数组，这里可以加变量清除
                             } else {
                                 console.log(`[ProxyIP Override] 无效的 proxyip 参数格式: ${clientProxyIP}`);
                             }
                         }
                     }
                 }
-
                 socks5Config = getConfigValue('s', env.s || env.S) || socks5Config;
                 if (socks5Config) {
                     try {
