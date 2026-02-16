@@ -1992,13 +1992,15 @@
         }
 
         // 支援由 client 以 query string 覆寫 proxyip（例如: ?proxyip=1.2.3.4 或 ?proxyip=socks5://user:pass@host:port）
+        // 這裡使用本地旗標 `proxyipOverridePrimary` 來表示 query 指定的非-protocol proxyip
+        // 應作為主要連線目標（而不僅是 fallback）。protocol 類型的 proxyip 仍會被解析為 SOCKS/HTTP 代理。
+        let proxyipOverridePrimary = false;
         try {
             const _url = new URL(request.url);
             const _proxy = (_url.searchParams.get('proxyip') || '').trim();
             if (_proxy) {
                 // 以协议开头视为代理协议（socks5:// 或 http://），尝试解析为 socks/http 代理配置
                 if (/^(socks5|http):\/\//i.test(_proxy)) {
-                    const proto = _proxy.split('://')[0].toLowerCase();
                     const addr = _proxy.replace(/^(socks5|http):\/\//i, '');
                     try {
                         parsedSocks5Config = parseSocksConfig(addr);
@@ -2007,8 +2009,9 @@
                         isSocksEnabled = false;
                     }
                 } else {
-                    // 否则作为直接的 fallback address（支持逗号分隔的多选，随机取一个）
+                    // 否則作為直接的 fallback address（支持逗號分隔的多選，隨機取一個）
                     fallbackAddress = _proxy.includes(',') ? _proxy.split(',')[Math.floor(Math.random() * _proxy.split(',').length)].trim() : _proxy;
+                    proxyipOverridePrimary = true;
                 }
             }
         } catch (e) {}
@@ -2072,6 +2075,7 @@
     }
 
     async function forwardTCP(addrType, host, portNum, rawData, ws, respHeader, remoteConnWrapper) {
+        // 若 query 指定 ?proxyip=host:port 並希望當作主要目標，local 旗標 `proxyipOverridePrimary` 會被設定為 true
         async function connectAndSend(address, port, useSocks = false) {
             const remoteSock = useSocks ?
                 await establishSocksConnection(addrType, address, port) :
@@ -2135,7 +2139,20 @@
         }
         
         try {
-            const initialSocket = await connectAndSend(host, portNum, enableSocksDowngrade ? false : isSocksEnabled);
+            // 決定初始連線目標：若 client 以 query 明確覆寫 proxyip（非 socks/http），
+            // 則將其作為主要連線目標；否則使用原始 host/port（可能透過 socks 代理）
+            let targetHost = host;
+            let targetPort = portNum;
+            let targetUseSocks = enableSocksDowngrade ? false : isSocksEnabled;
+            if (proxyipOverridePrimary && fallbackAddress && fallbackAddress.trim()) {
+                const parsed = parseAddressAndPort(fallbackAddress);
+                targetHost = parsed.address;
+                targetPort = parsed.port || portNum;
+                // query 指定的直接 proxyip（host:port）視為直接連線，不走 SOCKS
+                targetUseSocks = false;
+            }
+
+            const initialSocket = await connectAndSend(targetHost, targetPort, targetUseSocks);
             remoteConnWrapper.socket = initialSocket;
             connectStreams(initialSocket, ws, respHeader, retryConnection);
         } catch (err) {
