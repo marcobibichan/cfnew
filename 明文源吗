@@ -5562,6 +5562,12 @@
 
     async function handleXhttpPost(request) {
         try {
+            // 從 XHTTP POST 請求的 URL 提取 proxyip 查詢參數
+            const xhttpUrl = new URL(request.url);
+            const xhttpProxyIP = xhttpUrl.searchParams.get('proxyip');
+            if (xhttpProxyIP && xhttpProxyIP.trim()) {
+                fallbackAddress = xhttpProxyIP.trim();
+            }
             return await handle_xhttp_client(request.body, at);
         } catch (err) {
             return null;
