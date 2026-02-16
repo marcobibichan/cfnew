@@ -486,6 +486,12 @@
 
                 const url = new URL(request.url);
 
+                // 处理 proxyip 查询参数 - 从 URL 参数中提取并覆盖默认反代IP
+                const queryProxyIP = url.searchParams.get('proxyip');
+                if (queryProxyIP && queryProxyIP.trim()) {
+                    fallbackAddress = queryProxyIP.trim();
+                }
+
                 if (url.pathname.includes('/api/config')) {
                     const pathParts = url.pathname.split('/').filter(p => p);
                     
